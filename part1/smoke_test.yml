@@ -1,0 +1,133 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  Smoke Tests build
+
+Parameters:
+  Environment:
+    Default: /global/environment
+    Type: 'AWS::SSM::Parameter::Value<String>'
+
+  SandboxRole:
+    Default: /ci/base/sandbox-role
+    Type: 'AWS::SSM::Parameter::Value<String>'
+
+  ProductionRole:
+    Default: /ci/base/production-role
+    Type: 'AWS::SSM::Parameter::Value<String>'
+
+Conditions:
+  IsProduction:
+    !Equals [ "production", !Ref Environment ]
+
+Resources:
+  SmokeTestsSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: SG for SmokeTests
+      VpcId: !ImportValue MainVpcId
+
+  SmokeTestsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: smoke-tests-role
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - codebuild.amazonaws.com
+                - events.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: "/"
+      Policies:
+        - PolicyName: cbuild
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:*
+                  - s3:*
+                  - ssm:*
+                  - ec2:*
+                  - ecr:*
+                  - ecs:*
+                  - cloudformation:*
+                  - elasticloadbalancingv2:*
+                  - elasticloadbalancing:*
+                  - autoscaling:*
+                  - cloudwatch:*
+                  - iam:PassRole
+                  - iam:PutRolePolicy
+                  - cloudfront:CreateInvalidation
+                  - servicediscovery:GetService
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - sts:AssumeRole
+                Resource:
+                  - !Ref SandboxRole
+                  - !Ref ProductionRole
+            Version: '2012-10-17'
+        - PolicyName: start-build-policy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+            - Effect: Allow
+              Action:
+                - codebuild:StartBuild
+              Resource: !Sub "arn:aws:codebuild:eu-west-1:${AWS::AccountId}:project/smoke_tests"
+
+  SmokeTestsBuild:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: "smoke_tests"
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: !Sub "${AWS::AccountId}.dkr.ecr.eu-west-1.amazonaws.com/system:deploy"
+        ImagePullCredentialsType: SERVICE_ROLE
+      Source:
+        Type: GITHUB
+        Auth:
+          Type: OAUTH
+        Location: "https://github.com/wallester/automation.git"
+        BuildSpec: !Sub
+          - |
+            version: 0.2
+            phases:
+              build:
+                commands:
+                  - s3folder=$(echo $CODEBUILD_SOURCE_VERSION | cut -d "/" -f 2)
+                  - aws s3 cp s3://${PipelineBucket}/${!s3folder}/automation_last_commit .
+                  - last_commit=$(cat automation_last_commit)
+                  - kubernetes-run automation staging --template=smoke-runner --image=${AWS::AccountId}.dkr.ecr.eu-west-1.amazonaws.com/automation:${!last_commit} make smoke-test
+          - PipelineBucket: !ImportValue PipelineBucket
+      Artifacts:
+        Type: no_artifacts
+      ServiceRole: !GetAtt SmokeTestsRole.Arn
+      VpcConfig:
+        VpcId: !ImportValue MainVpcId
+        Subnets:
+          - !ImportValue MainVpcPrivateSubnetA
+        SecurityGroupIds:
+          - !Ref SmokeTestsSG
+
+  # SmokeTestsRecurringRule:
+  #   Type: AWS::Events::Rule
+  #   Condition: false
+  #   Properties:
+  #     Name: smoke-tests-recurring
+  #     Description: "Rule/Job to invoke SmokeTests every 6 hours"
+  #     ScheduleExpression: "rate(6 hours)"
+  #     Targets:
+  #       - Arn: !GetAtt SmokeTestsBuild.Arn
+  #         Id: "SmokeTestsRecurringRule"
+  #         RoleArn: !GetAtt SmokeTestsRole.Arn
+
+Outputs:
+  SmokeTestsBuildArn:
+    Description: "Smoke tests build for later use in codepipeline"
+    Value: !Ref SmokeTestsBuild
+    Export:
+      Name: SmokeTestsBuildArn

@@ -1,0 +1,26 @@
+version: 0.2
+env:
+  variables:
+    APP_NAME: "angular-cicd-pipeline-demo"
+phases:
+  install:
+    runtime-versions:
+      nodejs: 16.x
+    commands:
+      - echo install process started
+      - echo "Hello World"
+  build:
+    commands:
+      - echo build process started now
+      - s3folder=$(echo $CODEBUILD_SOURCE_VERSION | cut -d "/" -f 2)
+      - aws s3 cp s3://ci-pipelinebucket-5urq49af63w/${s3folder}/automation_last_commit .
+      - last_commit=$(cat automation_last_commit)
+      - kubernetes-run automation staging --template=smoke-runner --image=271332529381.dkr.ecr.eu-west-1.amazonaws.com/automation:${last_commit} make smoke-test
+      - cd ../../
+      - ls ../*
+  post_build:
+    commands:
+      - echo build process finished, we should uplload to S3 now
+      - cd ../
+      - ls -la
+      - echo "aws s3 sync . s3://app-culturi --delete"

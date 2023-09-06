@@ -1,0 +1,8 @@
+version: 0.2
+phases:
+  build:
+    commands:
+      - s3folder=$(echo $CODEBUILD_SOURCE_VERSION | cut -d "/" -f 2)
+      - aws s3 cp s3://ci-pipelinebucket-5urq49af63w/${s3folder}/automation_last_commit .
+      - last_commit=$(cat automation_last_commit)
+      - kubernetes-run automation staging --template=smoke-runner --image=271332529381.dkr.ecr.eu-west-1.amazonaws.com/automation:${last_commit} make smoke-test
